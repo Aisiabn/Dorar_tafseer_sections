@@ -165,6 +165,30 @@ def get_page_title(html):
     return ""
 
 
+def fix_multiline_footnotes(text):
+    """دمج كل حاشية متعددة الأسطر في سطر واحد"""
+    lines  = text.splitlines()
+    result = []
+    fn_def = re.compile(r'^\[\^\d+\]:')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if fn_def.match(line):
+            parts = [line.rstrip()]
+            i += 1
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt == '' or fn_def.match(nxt):
+                    break
+                parts.append(nxt.strip())
+                i += 1
+            result.append(' '.join(p for p in parts if p))
+        else:
+            result.append(line)
+            i += 1
+    return '\n'.join(result)
+
+
 # ══════════════════════════════════════════════
 # إعادة الترقيم (مشتركة)
 # ══════════════════════════════════════════════
@@ -483,8 +507,9 @@ def save_by_section(db_a, heading_display):
             for fn in all_footnotes:
                 lines.append(f"{fn}\n")
 
+        content = fix_multiline_footnotes("".join(lines))
         with open(filepath, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            f.write(content)
 
         total_chars = sum(len(e["text"]) for e in entries)
         print(f"  ✔ [A] {heading[:35]:35s}  {len(entries):4d} موضع  "
@@ -536,8 +561,9 @@ def save_sections(db_b):
             for fn in all_footnotes:
                 lines.append(f"{fn}\n")
 
+        content = fix_multiline_footnotes("".join(lines))
         with open(fpath, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            f.write(content)
 
         print(f"  ✔ [B] {safe_filename(display)}.md  "
               f"({len(entries)} مقطع، {len(all_footnotes)} حاشية)")
