@@ -60,10 +60,6 @@ def safe_filename(text):
     text = re.sub(r'[\\/:*?"<>|]', '', text).strip().rstrip(':').strip()
     return text[:80] or "قسم"
 
-def clean_fn_body(raw):
-    """دمج الحاشية في سطر واحد"""
-    return re.sub(r'\s+', ' ', raw).strip()
-
 def convert_inner_soup(soup_tag):
     """تحويل العناصر الداخلية في كائن BeautifulSoup"""
     for inner in soup_tag.find_all("span", class_="aaya"):
@@ -200,7 +196,6 @@ def renum(text, fns, global_fn_ref):
 
 # ══════════════════════════════════════════════
 # المُستخرِج الأول: مقالات (article + h5)
-# الإصلاح: placeholder لكل مقالة + تحويل داخلي قبل الاستخراج
 # ══════════════════════════════════════════════
 
 def extract_articles(html):
@@ -225,16 +220,15 @@ def extract_articles(html):
         if not heading:
             continue
 
-        # ── 1. استخرج الحواشي أولاً مع تحويل عناصرها الداخلية ──
+        # ── 1. استخرج الحواشي أولاً ──
         tips_map    = {}
-        tip_counter = 1
+        tip_counter = [1]
         for tip in block.find_all("span", class_="tip"):
-            convert_inner(tip)          # ← تحويل aaya/hadith/sora داخل الحاشية
-            tip_text = clean_fn_body(tip.get_text(strip=True))
+            tip_text = get_tip_text(tip)
             if tip_text:
-                tips_map[tip_counter] = tip_text
-                tip.replace_with(f"\x01{tip_counter}\x01")
-                tip_counter += 1
+                tips_map[tip_counter[0]] = tip_text
+                tip.replace_with(f"\x01{tip_counter[0]}\x01")
+                tip_counter[0] += 1
             else:
                 tip.decompose()
 
@@ -259,7 +253,7 @@ def extract_articles(html):
             p.insert_before("\n\n")
             p.insert_after("\n\n")
 
-        # ── 3. استخرج النص واستبدل العلامات بـ [^N] ──
+        # ── 3. استخرج النص واستبدل العلامات ──
         text      = block.get_text(separator="\n", strip=False)
         footnotes = []
         local_fn  = [1]
@@ -268,7 +262,7 @@ def extract_articles(html):
             tid  = int(m.group(1))
             body = _tips.get(tid, '')
             _fns.append(f"[^{_ctr[0]}]: {body}")
-            ref = f" [^{_ctr[0]}]"
+            ref  = f" [^{_ctr[0]}]"
             _ctr[0] += 1
             return ref
 
@@ -285,7 +279,6 @@ def extract_articles(html):
 
 # ══════════════════════════════════════════════
 # المُستخرِج الثاني: title-1
-# الإصلاح: كل <p> في المقالة + تحويل داخلي + محتوى قبل أول title-1
 # ══════════════════════════════════════════════
 
 def extract_title1_blocks(html):
@@ -298,25 +291,24 @@ def extract_title1_blocks(html):
             continue
         l3_heading = h5.get_text(strip=True)
 
-        # ── اجمع كل <p> في المقالة ──
         paragraphs = article.find_all("p")
         if not paragraphs:
             continue
 
-        # ── 1. استخرج كل الحواشي من كل الفقرات مع تحويل داخلي ──
+        # ── 1. استخرج كل الحواشي من كل الفقرات ──
         tips_map    = {}
-        tip_counter = 1
+        tip_counter = [1]
         for p in paragraphs:
             for tip in p.find_all("span", class_="tip"):
-                tip_text = clean_fn_body(get_tip_text(tip))  # ← يُحلّل الـ attribute كـ HTML
+                tip_text = get_tip_text(tip)
                 if tip_text:
-                    tips_map[tip_counter] = tip_text
-                    tip.replace_with(f"\x01{tip_counter}\x01")
-                    tip_counter += 1
+                    tips_map[tip_counter[0]] = tip_text
+                    tip.replace_with(f"\x01{tip_counter[0]}\x01")
+                    tip_counter[0] += 1
                 else:
                     tip.decompose()
 
-        # ── 2. علّم title-1 وحوّل بقية العناصر في كل الفقرات ──
+        # ── 2. علّم title-1 وحوّل بقية العناصر ──
         for p in paragraphs:
             for span in p.find_all("span", class_="title-1"):
                 span.replace_with(f"\x02{span.get_text(strip=True)}\x03")
@@ -332,11 +324,9 @@ def extract_title1_blocks(html):
                 br.replace_with("\n")
 
         # ── 3. اجمع نص كل الفقرات ──
-        raw = "\n\n".join(p.get_text(separator="") for p in article.find_all("p"))
-        raw = re.sub(r'[ \t]+', ' ', raw)
-
+        raw   = "\n\n".join(p.get_text(separator="") for p in article.find_all("p"))
+        raw   = re.sub(r'[ \t]+', ' ', raw)
         parts = _T1_RE.split(raw)
-        # parts = [نص_قبل_أول_title1, عنوان1, نص1, عنوان2, نص2, ...]
 
         i = 1
         while i + 1 < len(parts):
@@ -363,7 +353,6 @@ def extract_title1_blocks(html):
             seg_text = _TIP_RE.sub(replace_tip, seg_raw)
             seg_text = re.sub(r'\n{3,}', '\n\n', seg_text).strip()
 
-            # لا تتخطى إذا كان هناك حواشي حتى لو كان النص فارغاً
             if not seg_text and not local_fns:
                 continue
 
