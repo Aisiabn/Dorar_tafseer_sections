@@ -245,6 +245,12 @@ def extract_articles(html):
         heading = h_tag.get_text(strip=True) if h_tag else ""
         if h_tag:
             h_tag.decompose()
+        # fallback: span.title-2 كعنوان إذا لم يوجد h-tag
+        if not heading:
+            t2 = block.find("span", class_="title-2")
+            if t2:
+                heading = t2.get_text(strip=True)
+                t2.decompose()
         if not heading:
             continue
 
