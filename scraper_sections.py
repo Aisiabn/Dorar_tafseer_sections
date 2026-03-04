@@ -1,8 +1,9 @@
 """
 موسوعة التفسير — dorar.net
-مخرجان في زحفة واحدة:
-  ① dorar_tafseer_output/by_section/       — ملف لكل نوع قسم
+ثلاثة مخرجات في زحفة واحدة:
+  ① dorar_tafseer_output/by_section/    — ملف لكل نوع قسم (عبر كل السور)
   ② dorar_tafseer_output/tafseer_sections/ — ملف لكل عنوان title-1
+  ③ dorar_tafseer_output/surah_index/   — ملف واحد لكل سورة (صفحتها الأولى كاملة)
 """
 
 import requests
@@ -17,6 +18,7 @@ DELAY   = 1.2
 OUT_DIR = "dorar_tafseer_output"
 DIR_A   = os.path.join(OUT_DIR, "by_section")
 DIR_B   = os.path.join(OUT_DIR, "tafseer_sections")
+DIR_C   = os.path.join(OUT_DIR, "surah_index")          # ③ جديد
 
 _val        = os.environ.get("TEST_SURAHS", "None")
 TEST_SURAHS = None if _val == "None" else int(_val)
@@ -61,7 +63,6 @@ def safe_filename(text):
     return text[:80] or "قسم"
 
 def convert_inner_soup(soup_tag):
-    """تحويل العناصر الداخلية في كائن BeautifulSoup"""
     for inner in soup_tag.find_all("span", class_="aaya"):
         inner.replace_with(f"﴿{inner.get_text(strip=True)}﴾")
     for inner in soup_tag.find_all("span", class_="hadith"):
@@ -72,11 +73,6 @@ def convert_inner_soup(soup_tag):
             inner.replace_with(f" {t} ")
 
 def get_tip_text(tip):
-    """
-    استخراج نص الحاشية مع الحفاظ على أقواس الآيات.
-    الـ attribute قد يحتوي على HTML — نُحلّله قبل استخراج النص.
-    markers الحواشي المتداخلة \x01N\x01 تُحذف من النص النهائي.
-    """
     _marker = re.compile(r'\x01\d+\x01')
     for attr in ("data-original-title", "title", "data-content", "data-tippy-content"):
         val = tip.get(attr, "").strip()
@@ -85,7 +81,6 @@ def get_tip_text(tip):
             convert_inner_soup(inner_soup)
             result = re.sub(r'\s+', ' ', inner_soup.get_text()).strip()
             return _marker.sub('', result).strip()
-    # fallback: استخرج من DOM مباشرة
     convert_inner_soup(tip)
     result = re.sub(r'\s+', ' ', tip.get_text(strip=True)).strip()
     return _marker.sub('', result).strip()
@@ -166,7 +161,6 @@ def get_page_title(html):
 
 
 def fix_multiline_footnotes(text):
-    """دمج كل حاشية متعددة الأسطر في سطر واحد"""
     lines  = text.splitlines()
     result = []
     fn_def = re.compile(r'^\[\^\d+\]:')
@@ -245,7 +239,6 @@ def extract_articles(html):
         heading = h_tag.get_text(strip=True) if h_tag else ""
         if h_tag:
             h_tag.decompose()
-        # fallback: span.title-2 كعنوان إذا لم يوجد h-tag
         if not heading:
             t2 = block.find("span", class_="title-2")
             if t2:
@@ -254,7 +247,6 @@ def extract_articles(html):
         if not heading:
             continue
 
-        # ── 1. استخرج الحواشي أولاً — معالجة عكسية لحل مشكلة التداخل ──
         tips_map    = {}
         tip_counter = [1]
         for tip in reversed(list(block.find_all("span", class_="tip"))):
@@ -266,7 +258,6 @@ def extract_articles(html):
             else:
                 tip.decompose()
 
-        # ── 2. بقية التحويلات ──
         for span in block.find_all("span", class_="aaya"):
             span.replace_with(f"﴿{span.get_text(strip=True)}﴾")
         for span in block.find_all("span", class_="sora"):
@@ -289,7 +280,6 @@ def extract_articles(html):
             p.insert_before("\n\n")
             p.insert_after("\n\n")
 
-        # ── 3. استخرج النص واستبدل العلامات ──
         text      = block.get_text(separator="\n", strip=False)
         footnotes = []
         local_fn  = [1]
@@ -331,7 +321,6 @@ def extract_title1_blocks(html):
         if not paragraphs:
             continue
 
-        # ── 1. استخرج كل الحواشي من كل الفقرات — معالجة عكسية لحل مشكلة التداخل ──
         tips_map    = {}
         tip_counter = [1]
         for p in paragraphs:
@@ -344,7 +333,6 @@ def extract_title1_blocks(html):
                 else:
                     tip.decompose()
 
-        # ── 2. علّم title-1 وحوّل بقية العناصر ──
         for p in paragraphs:
             for span in p.find_all("span", class_="title-1"):
                 span.replace_with(f"\x02{span.get_text(strip=True)}\x03")
@@ -359,7 +347,6 @@ def extract_title1_blocks(html):
             for br in p.find_all("br"):
                 br.replace_with("\n")
 
-        # ── 3. اجمع نص كل الفقرات ──
         raw   = "\n\n".join(p.get_text(separator="") for p in article.find_all("p"))
         raw   = re.sub(r'[ \t]+', ' ', raw)
         parts = _T1_RE.split(raw)
@@ -411,6 +398,7 @@ def crawl_all(session, surah_links):
     db_a            = defaultdict(list)
     heading_display = {}
     db_b            = {}
+    db_c            = {}                  # ③ جديد: {snum: {title, url, articles: []}}
 
     for surah in surah_links:
         snum, stitle, surl = surah["num"], surah["title"], surah["url"]
@@ -421,10 +409,15 @@ def crawl_all(session, surah_links):
         if not html_s:
             continue
 
-        _feed_a(db_a, heading_display, extract_articles(html_s),
+        articles_s = extract_articles(html_s)
+
+        _feed_a(db_a, heading_display, articles_s,
                 stitle, snum, f"تعريف {stitle}", surl)
         _feed_b(db_b, extract_title1_blocks(html_s),
                 stitle, f"تعريف {stitle}")
+
+        # ③ احفظ مقالات الصفحة الأولى للسورة
+        db_c[snum] = {"title": stitle, "url": surl, "articles": articles_s}
 
         first_url = get_first_section_link(html_s, snum)
         if not first_url:
@@ -450,7 +443,7 @@ def crawl_all(session, surah_links):
             next_url = get_next_link(html_p)
             sec_num += 1
 
-    return db_a, heading_display, db_b
+    return db_a, heading_display, db_b, db_c
 
 
 def _feed_a(db, display_map, articles, stitle, snum, ptitle, url):
@@ -580,6 +573,55 @@ def save_sections(db_b):
 
 
 # ══════════════════════════════════════════════
+# الحفظ — المخرج الثالث (surah_index)         ③
+# ══════════════════════════════════════════════
+
+def save_surah_index(db_c):
+    os.makedirs(DIR_C, exist_ok=True)
+
+    for snum in sorted(db_c.keys()):
+        info     = db_c[snum]
+        stitle   = info["title"]
+        surl     = info["url"]
+        articles = info["articles"]
+
+        if not articles:
+            continue
+
+        fname = f"{snum:03d}_{safe_filename(stitle)}.md"
+        fpath = os.path.join(DIR_C, fname)
+
+        global_fn_ref = [1]
+        all_footnotes = []
+        lines = [
+            f"# {stitle}\n\n",
+            f"> المصدر: موسوعة التفسير — dorar.net  \n",
+            f"> {surl}\n\n",
+            "---\n\n",
+        ]
+
+        for art in articles:
+            lines.append(f"## {art['heading']}\n\n")
+            text, fns = renum(art["text"], art.get("footnotes", []), global_fn_ref)
+            lines.append(f"{text}\n\n---\n\n")
+            all_footnotes.extend(fns)
+
+        if all_footnotes:
+            lines.append("\n## الحواشي\n\n")
+            for fn in all_footnotes:
+                lines.append(f"{fn}\n")
+
+        content = fix_multiline_footnotes("".join(lines))
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        print(f"  ✔ [C] {fname}  "
+              f"({len(articles)} قسم، {len(all_footnotes)} حاشية)")
+
+    print(f"\n✔ {len(db_c)} ملف في {DIR_C}/")
+
+
+# ══════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════
 
@@ -604,14 +646,17 @@ if __name__ == "__main__":
             surah_links = surah_links[:TEST_SURAHS]
             print(f"   وضع الاختبار: أول {TEST_SURAHS} سور فقط\n")
 
-        print("\n④ الزحف (زحفة واحدة — مخرجان)...")
-        db_a, heading_display, db_b = crawl_all(session, surah_links)
+        print("\n④ الزحف (زحفة واحدة — ثلاثة مخرجات)...")
+        db_a, heading_display, db_b, db_c = crawl_all(session, surah_links)
 
         print(f"\n⑤ حفظ {len(db_a)} قسم في {DIR_A}/...")
         save_by_section(db_a, heading_display)
 
         print(f"\n⑥ حفظ {len(db_b)} قسم في {DIR_B}/...")
         save_sections(db_b)
+
+        print(f"\n⑦ حفظ {len(db_c)} سورة في {DIR_C}/...")
+        save_surah_index(db_c)
 
         print("\n✔ اكتمل.")
 
