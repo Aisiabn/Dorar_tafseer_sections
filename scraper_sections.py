@@ -275,6 +275,8 @@ def extract_articles(html):
             span.replace_with(f"«{span.get_text(strip=True)}»")
         for span in block.find_all("span", class_="title-2"):
             span.replace_with(f"\n#### {span.get_text(strip=True)}\n")
+        for span in block.find_all("span", class_="title-1"):
+            span.replace_with(f"\n##### {span.get_text(strip=True)}\n")
         for a in block.find_all("a"):
             if re.search(r"السابق|التالي|الصفحة|المراجع|اعتماد", a.get_text()):
                 a.decompose()
@@ -302,7 +304,7 @@ def extract_articles(html):
 
         text = _TIP_RE.sub(replace_marker, text)
         text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'(?<!\n)\n(?![\n#>﴿«])', ' ', text)
+        text = re.sub(r'(?<!\n)\n(?![\n#>﴿«\d])', ' ', text)
         text = re.sub(r'\n{3,}', '\n\n', text).strip()
 
         if text:
