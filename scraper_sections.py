@@ -18,7 +18,7 @@ DELAY   = 1.2
 OUT_DIR = "dorar_tafseer_output"
 DIR_A   = os.path.join(OUT_DIR, "by_section")
 DIR_B   = os.path.join(OUT_DIR, "tafseer_sections")
-DIR_C   = os.path.join(OUT_DIR, "surah_index")          # ③ جديد
+DIR_C   = os.path.join(OUT_DIR, "surah_index")
 
 _val        = os.environ.get("TEST_SURAHS", "None")
 TEST_SURAHS = None if _val == "None" else int(_val)
@@ -274,8 +274,7 @@ def extract_articles(html):
         for i in range(1, 7):
             for h in block.find_all(f"h{i}"):
                 h.replace_with(f"\n{'#'*(i+2)} {h.get_text(strip=True)}\n")
-        for br in block.find_all("br"):
-            br.replace_with("\n")
+        # ── الإصلاح: حُذف سطر br.replace_with("\n") — get_text(separator="\n") يكفي
         for p in block.find_all("p"):
             p.insert_before("\n\n")
             p.insert_after("\n\n")
@@ -398,7 +397,7 @@ def crawl_all(session, surah_links):
     db_a            = defaultdict(list)
     heading_display = {}
     db_b            = {}
-    db_c            = {}                  # ③ جديد: {snum: {title, url, articles: []}}
+    db_c            = {}
 
     for surah in surah_links:
         snum, stitle, surl = surah["num"], surah["title"], surah["url"]
@@ -416,7 +415,6 @@ def crawl_all(session, surah_links):
         _feed_b(db_b, extract_title1_blocks(html_s),
                 stitle, f"تعريف {stitle}")
 
-        # ③ احفظ مقالات الصفحة الأولى للسورة
         db_c[snum] = {"title": stitle, "url": surl, "articles": articles_s}
 
         first_url = get_first_section_link(html_s, snum)
@@ -573,7 +571,7 @@ def save_sections(db_b):
 
 
 # ══════════════════════════════════════════════
-# الحفظ — المخرج الثالث (surah_index)         ③
+# الحفظ — المخرج الثالث (surah_index)
 # ══════════════════════════════════════════════
 
 def save_surah_index(db_c):
