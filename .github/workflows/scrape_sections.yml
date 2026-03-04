@@ -28,9 +28,14 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add dorar_tafseer_output/
-          git diff --cached --quiet || (
-            git commit -m "update: تحديث مخرجات التفسير"
-            git pull origin main --rebase
-            git push
-          )
+          if [ -d "dorar_tafseer_output" ] && [ "$(ls -A dorar_tafseer_output)" ]; then
+            git add dorar_tafseer_output/
+            git diff --cached --quiet || (
+              git commit -m "update: تحديث مخرجات التفسير"
+              git pull origin main --rebase
+              git push
+            )
+          else
+            echo "⚠️ لا يوجد مخرجات — تحقق من لوج الكود"
+            exit 1
+          fi
