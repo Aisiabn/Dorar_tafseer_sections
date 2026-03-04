@@ -1,8 +1,8 @@
 """
 موسوعة التفسير — dorar.net
 مخرجان في زحفة واحدة:
-  ① dorar_by_section/      — ملف لكل نوع قسم (غريب الكلمات، تفسير الآيات...)
-  ② dorar_tafseer_sections/ — ملف لكل عنوان title-1
+  ① dorar_tafseer_output/by_section/       — ملف لكل نوع قسم
+  ② dorar_tafseer_output/tafseer_sections/ — ملف لكل عنوان title-1
 """
 
 import requests
@@ -61,8 +61,19 @@ def safe_filename(text):
     return text[:80] or "قسم"
 
 def clean_fn_body(raw):
-    """دمج الحاشية في سطر واحد — الإصلاح الجوهري"""
+    """دمج الحاشية في سطر واحد"""
     return re.sub(r'\s+', ' ', raw).strip()
+
+def convert_inner(tag):
+    """تحويل العناصر الداخلية داخل أي span (للحواشي خصوصاً)"""
+    for inner in tag.find_all("span", class_="aaya"):
+        inner.replace_with(f"﴿{inner.get_text(strip=True)}﴾")
+    for inner in tag.find_all("span", class_="hadith"):
+        inner.replace_with(f"«{inner.get_text(strip=True)}»")
+    for inner in tag.find_all("span", class_="sora"):
+        t = inner.get_text(strip=True)
+        if t:
+            inner.replace_with(f" {t} ")
 
 def make_session():
     s = requests.Session()
@@ -144,10 +155,6 @@ def get_page_title(html):
 # ══════════════════════════════════════════════
 
 def renum(text, fns, global_fn_ref):
-    """
-    إعادة ترقيم بنظام placeholder ثنائي المرحلة
-    global_fn_ref: قائمة [int] تُعدَّل في المكان
-    """
     if not fns:
         return text, []
 
@@ -158,14 +165,11 @@ def renum(text, fns, global_fn_ref):
             local_map[m.group(1)] = global_fn_ref[0]
             global_fn_ref[0] += 1
 
-    # مرحلة ١: أرقام محلية → placeholder
     for loc in local_map:
         text = re.sub(
             rf'(?<!\d)\[\^{re.escape(loc)}\](?!\d)',
-            f'\x04{loc}\x04',
-            text
+            f'\x04{loc}\x04', text
         )
-    # مرحلة ٢: placeholder → أرقام عالمية
     for loc, gbl in local_map.items():
         text = text.replace(f'\x04{loc}\x04', f'[^{gbl}]')
 
@@ -181,10 +185,10 @@ def renum(text, fns, global_fn_ref):
 
 # ══════════════════════════════════════════════
 # المُستخرِج الأول: مقالات (article + h5)
+# الإصلاح: placeholder لكل مقالة + تحويل داخلي قبل الاستخراج
 # ══════════════════════════════════════════════
 
 def extract_articles(html):
-    """يُرجع قائمة أقسام مع heading و text و footnotes"""
     soup = BeautifulSoup(html, "html.parser")
 
     for tag in soup.find_all(["nav", "header", "footer", "script", "style", "form"]):
@@ -196,8 +200,7 @@ def extract_articles(html):
         for tag in soup.find_all(True, class_=pat):
             tag.decompose()
 
-    results    = []
-    fn_counter = 1
+    results = []
 
     for block in soup.find_all("article"):
         h_tag   = block.find(["h5", "h4", "h3"])
@@ -207,6 +210,20 @@ def extract_articles(html):
         if not heading:
             continue
 
+        # ── 1. استخرج الحواشي أولاً مع تحويل عناصرها الداخلية ──
+        tips_map    = {}
+        tip_counter = 1
+        for tip in block.find_all("span", class_="tip"):
+            convert_inner(tip)          # ← تحويل aaya/hadith/sora داخل الحاشية
+            tip_text = clean_fn_body(tip.get_text(strip=True))
+            if tip_text:
+                tips_map[tip_counter] = tip_text
+                tip.replace_with(f"\x01{tip_counter}\x01")
+                tip_counter += 1
+            else:
+                tip.decompose()
+
+        # ── 2. بقية التحويلات ──
         for span in block.find_all("span", class_="aaya"):
             span.replace_with(f"﴿{span.get_text(strip=True)}﴾")
         for span in block.find_all("span", class_="sora"):
@@ -221,26 +238,26 @@ def extract_articles(html):
         for i in range(1, 7):
             for h in block.find_all(f"h{i}"):
                 h.replace_with(f"\n{'#'*(i+2)} {h.get_text(strip=True)}\n")
-
-        footnotes = []
-        for fn_tag in block.find_all("span", class_="tip"):
-            for inner in fn_tag.find_all("span", class_="aaya"):
-                inner.replace_with(f"﴿{inner.get_text(strip=True)}﴾")
-            for inner in fn_tag.find_all("span", class_="hadith"):
-                inner.replace_with(f"«{inner.get_text(strip=True)}»")
-            fn_text = clean_fn_body(fn_tag.get_text(strip=True))  # ← الإصلاح
-            if fn_text:
-                footnotes.append(f"[^{fn_counter}]: {fn_text}")
-                fn_tag.replace_with(f" [^{fn_counter}]")
-                fn_counter += 1
-
         for br in block.find_all("br"):
             br.replace_with("\n")
         for p in block.find_all("p"):
             p.insert_before("\n\n")
             p.insert_after("\n\n")
 
-        text = block.get_text(separator="\n", strip=False)
+        # ── 3. استخرج النص واستبدل العلامات بـ [^N] ──
+        text      = block.get_text(separator="\n", strip=False)
+        footnotes = []
+        local_fn  = [1]
+
+        def replace_marker(m, _tips=tips_map, _fns=footnotes, _ctr=local_fn):
+            tid  = int(m.group(1))
+            body = _tips.get(tid, '')
+            _fns.append(f"[^{_ctr[0]}]: {body}")
+            ref = f" [^{_ctr[0]}]"
+            _ctr[0] += 1
+            return ref
+
+        text = _TIP_RE.sub(replace_marker, text)
         text = re.sub(r'[ \t]+', ' ', text)
         text = re.sub(r'(?<!\n)\n(?![\n#>﴿«])', ' ', text)
         text = re.sub(r'\n{3,}', '\n\n', text).strip()
@@ -253,10 +270,10 @@ def extract_articles(html):
 
 # ══════════════════════════════════════════════
 # المُستخرِج الثاني: title-1
+# الإصلاح: كل <p> في المقالة + تحويل داخلي + محتوى قبل أول title-1
 # ══════════════════════════════════════════════
 
 def extract_title1_blocks(html):
-    """يُرجع قائمة أقسام مقسّمة على span.title-1"""
     soup   = BeautifulSoup(html, "html.parser")
     blocks = []
 
@@ -266,40 +283,46 @@ def extract_title1_blocks(html):
             continue
         l3_heading = h5.get_text(strip=True)
 
-        p = article.find("p")
-        if not p:
+        # ── اجمع كل <p> في المقالة ──
+        paragraphs = article.find_all("p")
+        if not paragraphs:
             continue
 
-        # ── استخراج الحواشي أولاً ──
+        # ── 1. استخرج كل الحواشي من كل الفقرات مع تحويل داخلي ──
         tips_map    = {}
         tip_counter = 1
-        for tip in p.find_all("span", class_="tip"):
-            tip_text = clean_fn_body(tip.get_text(strip=True))  # ← الإصلاح
-            if tip_text:
-                tips_map[tip_counter] = tip_text
-                tip.replace_with(f"\x01{tip_counter}\x01")
-                tip_counter += 1
-            else:
-                tip.decompose()
+        for p in paragraphs:
+            for tip in p.find_all("span", class_="tip"):
+                convert_inner(tip)      # ← تحويل aaya/hadith/sora داخل الحاشية
+                tip_text = clean_fn_body(tip.get_text(strip=True))
+                if tip_text:
+                    tips_map[tip_counter] = tip_text
+                    tip.replace_with(f"\x01{tip_counter}\x01")
+                    tip_counter += 1
+                else:
+                    tip.decompose()
 
-        # ── علّم title-1 ──
-        for span in p.find_all("span", class_="title-1"):
-            span.replace_with(f"\x02{span.get_text(strip=True)}\x03")
+        # ── 2. علّم title-1 وحوّل بقية العناصر في كل الفقرات ──
+        for p in paragraphs:
+            for span in p.find_all("span", class_="title-1"):
+                span.replace_with(f"\x02{span.get_text(strip=True)}\x03")
+            for span in p.find_all("span", class_="aaya"):
+                span.replace_with(f"﴿{span.get_text(strip=True)}﴾")
+            for span in p.find_all("span", class_="hadith"):
+                span.replace_with(f"«{span.get_text(strip=True)}»")
+            for span in p.find_all("span", class_="sora"):
+                t = span.get_text(strip=True)
+                if t:
+                    span.replace_with(f" {t} ")
+            for br in p.find_all("br"):
+                br.replace_with("\n")
 
-        for span in p.find_all("span", class_="aaya"):
-            span.replace_with(f"﴿{span.get_text(strip=True)}﴾")
-        for span in p.find_all("span", class_="hadith"):
-            span.replace_with(f"«{span.get_text(strip=True)}»")
-        for span in p.find_all("span", class_="sora"):
-            t = span.get_text(strip=True)
-            if t:
-                span.replace_with(f" {t} ")
-        for br in p.find_all("br"):
-            br.replace_with("\n")
+        # ── 3. اجمع نص كل الفقرات ──
+        raw = "\n\n".join(p.get_text(separator="") for p in article.find_all("p"))
+        raw = re.sub(r'[ \t]+', ' ', raw)
 
-        raw   = p.get_text(separator="")
-        raw   = re.sub(r'[ \t]+', ' ', raw)
         parts = _T1_RE.split(raw)
+        # parts = [نص_قبل_أول_title1, عنوان1, نص1, عنوان2, نص2, ...]
 
         i = 1
         while i + 1 < len(parts):
@@ -307,15 +330,15 @@ def extract_title1_blocks(html):
             seg_raw    = parts[i + 1]
             i += 2
 
-            if not title_text or not seg_raw.strip():
+            if not title_text:
                 continue
 
-            local_fn  = 1
+            local_fn  = [1]
             local_fns = []
             seen_tips = {}
 
             def replace_tip(m, _tips=tips_map, _seen=seen_tips,
-                            _fns=local_fns, _ctr=[local_fn]):
+                            _fns=local_fns, _ctr=local_fn):
                 tid = int(m.group(1))
                 if tid not in _seen:
                     _seen[tid] = _ctr[0]
@@ -325,6 +348,10 @@ def extract_title1_blocks(html):
 
             seg_text = _TIP_RE.sub(replace_tip, seg_raw)
             seg_text = re.sub(r'\n{3,}', '\n\n', seg_text).strip()
+
+            # لا تتخطى إذا كان هناك حواشي حتى لو كان النص فارغاً
+            if not seg_text and not local_fns:
+                continue
 
             blocks.append({
                 "key"      : fuzzy_key(title_text),
@@ -338,13 +365,13 @@ def extract_title1_blocks(html):
 
 
 # ══════════════════════════════════════════════
-# الزحف الموحّد (يستدعي كلا المُستخرِجَين)
+# الزحف الموحّد
 # ══════════════════════════════════════════════
 
 def crawl_all(session, surah_links):
-    db_a             = defaultdict(list)   # للمخرج الأول
-    heading_display  = {}
-    db_b             = {}                  # للمخرج الثاني
+    db_a            = defaultdict(list)
+    heading_display = {}
+    db_b            = {}
 
     for surah in surah_links:
         snum, stitle, surl = surah["num"], surah["title"], surah["url"]
@@ -355,7 +382,6 @@ def crawl_all(session, surah_links):
         if not html_s:
             continue
 
-        # ── صفحة التعريف ──
         _feed_a(db_a, heading_display, extract_articles(html_s),
                 stitle, snum, f"تعريف {stitle}", surl)
         _feed_b(db_b, extract_title1_blocks(html_s),
