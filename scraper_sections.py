@@ -64,16 +64,31 @@ def clean_fn_body(raw):
     """دمج الحاشية في سطر واحد"""
     return re.sub(r'\s+', ' ', raw).strip()
 
-def convert_inner(tag):
-    """تحويل العناصر الداخلية داخل أي span (للحواشي خصوصاً)"""
-    for inner in tag.find_all("span", class_="aaya"):
+def convert_inner_soup(soup_tag):
+    """تحويل العناصر الداخلية في كائن BeautifulSoup"""
+    for inner in soup_tag.find_all("span", class_="aaya"):
         inner.replace_with(f"﴿{inner.get_text(strip=True)}﴾")
-    for inner in tag.find_all("span", class_="hadith"):
+    for inner in soup_tag.find_all("span", class_="hadith"):
         inner.replace_with(f"«{inner.get_text(strip=True)}»")
-    for inner in tag.find_all("span", class_="sora"):
+    for inner in soup_tag.find_all("span", class_="sora"):
         t = inner.get_text(strip=True)
         if t:
             inner.replace_with(f" {t} ")
+
+def get_tip_text(tip):
+    """
+    استخراج نص الحاشية مع الحفاظ على أقواس الآيات.
+    الـ attribute قد يحتوي على HTML — نُحلّله قبل استخراج النص.
+    """
+    for attr in ("data-original-title", "title", "data-content", "data-tippy-content"):
+        val = tip.get(attr, "").strip()
+        if val:
+            inner_soup = BeautifulSoup(val, "html.parser")
+            convert_inner_soup(inner_soup)
+            return re.sub(r'\s+', ' ', inner_soup.get_text()).strip()
+    # fallback: استخرج من DOM مباشرة
+    convert_inner_soup(tip)
+    return re.sub(r'\s+', ' ', tip.get_text(strip=True)).strip()
 
 def make_session():
     s = requests.Session()
@@ -293,8 +308,7 @@ def extract_title1_blocks(html):
         tip_counter = 1
         for p in paragraphs:
             for tip in p.find_all("span", class_="tip"):
-                convert_inner(tip)      # ← تحويل aaya/hadith/sora داخل الحاشية
-                tip_text = clean_fn_body(tip.get_text(strip=True))
+                tip_text = clean_fn_body(get_tip_text(tip))  # ← يُحلّل الـ attribute كـ HTML
                 if tip_text:
                     tips_map[tip_counter] = tip_text
                     tip.replace_with(f"\x01{tip_counter}\x01")
